@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation"
 import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
 import { ArrowLeft, Download, Loader2 } from "lucide-react"
+import { FallbackPdfViewer } from "@/components/fallback-pdf-viewer"
 
 interface PdfFile {
   id: string
@@ -20,6 +21,7 @@ export default function EditorPage({ params }: { params: Promise<{ fileId: strin
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [fileId, setFileId] = useState<string | null>(null)
+  const [useFallbackViewer, setUseFallbackViewer] = useState(false)
   const containerRef = useRef<HTMLDivElement>(null)
 
   // Resolve params and fetch file data
@@ -50,29 +52,108 @@ export default function EditorPage({ params }: { params: Promise<{ fileId: strin
   useEffect(() => {
     if (!pdfFile?.url || !containerRef.current) return
 
+    let viewerInstance: any = null
+
+    const validatePdfFile = async (url: string): Promise<boolean> => {
+      try {
+        const response = await fetch(url, { method: 'HEAD' })
+        const contentType = response.headers.get('content-type')
+        const contentLength = response.headers.get('content-length')
+        
+        // Check if it's actually a PDF
+        if (!contentType?.includes('pdf') && !url.toLowerCase().endsWith('.pdf')) {
+          console.warn('File does not appear to be a PDF')
+          return false
+        }
+        
+        // Check if file is too large (over 50MB might cause issues)
+        if (contentLength && parseInt(contentLength) > 50 * 1024 * 1024) {
+          console.warn('PDF file is very large and might cause issues')
+        }
+        
+        return true
+      } catch (err) {
+        console.warn('Could not validate PDF file:', err)
+        return true // Allow loading anyway
+      }
+    }
+
     const loadNutrientViewer = async () => {
       try {
-        // Wait for NutrientViewer to be available
-        if (typeof window !== 'undefined' && (window as any).NutrientViewer) {
-          await (window as any).NutrientViewer.load({
+        // Validate the PDF file first
+        const isValidPdf = await validatePdfFile(pdfFile.url)
+        if (!isValidPdf) {
+          setError('This file format is not supported by the PDF viewer.')
+          return
+        }
+
+        // Wait for DOM to be ready and NutrientViewer to be available
+        await new Promise(resolve => {
+          if (document.readyState === 'complete') {
+            resolve(true)
+          } else {
+            window.addEventListener('load', () => resolve(true))
+          }
+        })
+
+        // Add a small delay to ensure everything is properly initialized
+        await new Promise(resolve => setTimeout(resolve, 100))
+
+        if (typeof window !== 'undefined' && (window as any).NutrientViewer && containerRef.current) {
+          // Clear any existing content
+          containerRef.current.innerHTML = ''
+
+          // Add error handling for Nutrient Viewer initialization
+          viewerInstance = await (window as any).NutrientViewer.load({
             container: containerRef.current,
             document: pdfFile.url,
+            baseUrl: `${window.location.protocol}//${window.location.host}/`,
+            // Add configuration to handle problematic PDFs
+            initialViewState: {
+              zoom: 'auto'
+            },
+            // Enable error recovery
+            enableAnnotations: true,
+            enableFormFilling: true,
+          }).catch((nutrientError: any) => {
+            console.error('Nutrient Viewer failed to load PDF:', nutrientError)
+            
+            // Check if it's the specific "matches" error
+            if (nutrientError.message?.includes('matches') || nutrientError.toString().includes('matches')) {
+              throw new Error('This PDF file has a format that is not compatible with the advanced viewer. The file may be corrupted or use unsupported features.')
+            }
+            
+            throw new Error(`PDF viewer error: ${nutrientError.message || 'Unknown error'}`)
           })
         } else {
           console.error('NutrientViewer not available')
-          setError('PDF viewer not loaded')
+          setError('PDF viewer not loaded. Please refresh the page.')
         }
       } catch (err) {
         console.error('Failed to load Nutrient Viewer:', err)
-        setError('Failed to load PDF viewer')
+        const errorMessage = err instanceof Error ? err.message : 'Unknown error'
+        
+        if (errorMessage.includes('matches') || errorMessage.includes('not compatible')) {
+          console.log('Falling back to basic PDF viewer due to compatibility issues')
+          setUseFallbackViewer(true)
+        } else {
+          console.log('Falling back to basic PDF viewer due to error:', errorMessage)
+          setUseFallbackViewer(true)
+        }
       }
     }
 
     loadNutrientViewer()
 
     return () => {
-      if (typeof window !== 'undefined' && (window as any).NutrientViewer && containerRef.current) {
-        (window as any).NutrientViewer.unload(containerRef.current)
+      try {
+        if (viewerInstance && typeof viewerInstance.unload === 'function') {
+          viewerInstance.unload()
+        } else if (typeof window !== 'undefined' && (window as any).NutrientViewer && containerRef.current) {
+          (window as any).NutrientViewer.unload(containerRef.current)
+        }
+      } catch (err) {
+        console.warn('Error during cleanup:', err)
       }
     }
   }, [pdfFile])
@@ -107,12 +188,12 @@ export default function EditorPage({ params }: { params: Promise<{ fileId: strin
               <h2 className="text-xl font-semibold text-gray-900">Something went wrong</h2>
               <p className="text-gray-600 mt-2">{error}</p>
             </div>
-            <Button 
-              onClick={() => router.push('/')} 
+            <Button
+              onClick={() => router.push('/dashboard')}
               variant="outline"
               className="w-full"
             >
-              <ArrowLeft className="h-4 text- w-4 mr-2" />
+              <ArrowLeft className="h-4 w-4 mr-2" />
               Back to Dashboard
             </Button>
           </div>
@@ -135,8 +216,8 @@ export default function EditorPage({ params }: { params: Promise<{ fileId: strin
               <h2 className="text-xl font-semibold text-gray-900">File not found</h2>
               <p className="text-gray-600 mt-2">The PDF file you're looking for doesn't exist or has been removed.</p>
             </div>
-            <Button 
-              onClick={() => router.push('/')} 
+            <Button
+              onClick={() => router.push('/dashboard')}
               variant="outline"
               className="w-full"
             >
@@ -154,9 +235,9 @@ export default function EditorPage({ params }: { params: Promise<{ fileId: strin
       {/* Header */}
       <div className="flex items-center justify-between p-4 bg-white border-b shadow-sm">
         <div className="flex items-center space-x-4">
-          <Button 
-            onClick={() => router.push('/')} 
-            variant="ghost" 
+          <Button
+            onClick={() => router.push('/dashboard')}
+            variant="ghost"
             size="sm"
             className="hover:bg-gray-100"
           >
@@ -174,6 +255,30 @@ export default function EditorPage({ params }: { params: Promise<{ fileId: strin
           </div>
         </div>
         <div className="flex items-center space-x-2">
+          {!useFallbackViewer && (
+            <Button 
+              variant="ghost" 
+              size="sm" 
+              onClick={() => setUseFallbackViewer(true)}
+              className="hover:bg-gray-50"
+            >
+              Use Basic Viewer
+            </Button>
+          )}
+          {useFallbackViewer && (
+            <Button 
+              variant="ghost" 
+              size="sm" 
+              onClick={() => {
+                setUseFallbackViewer(false)
+                // Reset any errors when switching back
+                setError(null)
+              }}
+              className="hover:bg-gray-50"
+            >
+              Use Advanced Viewer
+            </Button>
+          )}
           <Button variant="outline" size="sm" asChild className="hover:bg-gray-50">
             <a href={pdfFile.url} download={pdfFile.name}>
               <Download className="h-4 w-4 mr-2" />
@@ -185,14 +290,18 @@ export default function EditorPage({ params }: { params: Promise<{ fileId: strin
 
       {/* PDF Viewer Container */}
       <div className="flex-1 bg-white m-4 rounded-lg shadow-sm border overflow-hidden">
-        <div
-          ref={containerRef}
-          className="w-full h-full bg-white"
-          style={{
-            height: "calc(100vh - 120px)",
-            width: "100%",
-          }}
-        />
+        {useFallbackViewer ? (
+          <FallbackPdfViewer pdfUrl={pdfFile.url} fileName={pdfFile.name} />
+        ) : (
+          <div
+            ref={containerRef}
+            className="w-full h-full bg-white"
+            style={{
+              height: "calc(100vh - 120px)",
+              width: "100%",
+            }}
+          />
+        )}
       </div>
     </div>
   )

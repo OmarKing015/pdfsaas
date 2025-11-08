@@ -17,32 +17,77 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "No file provided" }, { status: 400 });
     }
 
-    // Validate file type
-    if (
-      !file.type.includes("pdf") &&
-      !file.name.toLowerCase().endsWith(".pdf")
-    ) {
-      return NextResponse.json(
-        { error: "Only PDF files are allowed" },
-        { status: 400 }
+    // Relaxed file type validation - accept if file exists and has reasonable name
+    const hasValidExtension = file.name.toLowerCase().endsWith(".pdf");
+    const hasValidMimeType = file.type.includes("pdf") || file.type === "application/octet-stream";
+    
+    if (!hasValidExtension && !hasValidMimeType) {
+      // Only reject if it's clearly not a PDF
+      const suspiciousExtensions = ['.txt', '.doc', '.docx', '.jpg', '.png', '.gif'];
+      const hasSuspiciousExtension = suspiciousExtensions.some(ext => 
+        file.name.toLowerCase().endsWith(ext)
       );
+      
+      if (hasSuspiciousExtension) {
+        return NextResponse.json(
+          { error: "Only PDF files are allowed" },
+          { status: 400 }
+        );
+      }
     }
 
-    // Validate file size (max 10MB)
-    const maxSize = 10 * 1024 * 1024; // 10MB
+    // Relaxed file size validation (max 50MB instead of 10MB)
+    const maxSize = 50 * 1024 * 1024; // 50MB
     if (file.size > maxSize) {
       return NextResponse.json(
-        { error: "File size must be less than 10MB" },
+        { error: "File size must be less than 50MB" },
         { status: 400 }
       );
     }
 
-    // Generate unique filename to avoid conflicts
+    // Basic file validation - just ensure it's not empty
+    if (file.size === 0) {
+      return NextResponse.json(
+        { error: "File appears to be empty" },
+        { status: 400 }
+      );
+    }
+
+    // Optional PDF validation - only warn, don't reject
+    try {
+      const buffer = await file.arrayBuffer();
+      const uint8Array = new Uint8Array(buffer);
+      
+      // Check PDF magic number (%PDF) - but don't reject if missing
+      const pdfHeader = String.fromCharCode(...uint8Array.slice(0, 4));
+      if (pdfHeader !== '%PDF') {
+        console.warn(`File ${file.name} may not be a valid PDF (missing PDF header)`);
+        // Don't reject - let the viewer handle it
+      }
+
+      // Check if file is suspiciously small
+      if (buffer.byteLength < 50) {
+        console.warn(`File ${file.name} is very small (${buffer.byteLength} bytes)`);
+        // Don't reject - might be a minimal PDF
+      }
+    } catch (validationError) {
+      console.warn("PDF validation warning:", validationError);
+      // Don't reject - continue with upload
+    }
+
+    // Generate unique filename to avoid conflicts with fallback handling
     const timestamp = Date.now();
-    const sanitizedName = file.name.replace(/[^a-zA-Z0-9.-]/g, "_");
+    let originalName = file.name || "uploaded_file";
+    
+    // Ensure the file has a .pdf extension
+    if (!originalName.toLowerCase().endsWith('.pdf')) {
+      originalName += '.pdf';
+    }
+    
+    const sanitizedName = originalName.replace(/[^a-zA-Z0-9.-]/g, "_");
     const fileName = `${timestamp}_${sanitizedName}`;
 
-    console.log(`Uploading file: ${fileName}, size: ${file.size} bytes`);
+    console.log(`Uploading file: ${fileName}, original: ${file.name}, size: ${file.size} bytes`);
 
     // Upload to Supabase storage
     const { data: uploadData, error: uploadError } = await supabase.storage
@@ -85,12 +130,15 @@ export async function POST(request: NextRequest) {
       success: true,
       file: {
         id: uploadData.id || fileName,
-        name: file.name,
+        name: file.name || "uploaded_file.pdf",
         fileName: fileName,
         url: urlData.publicUrl,
-        size: file.size,
+        size: file.size || 0,
         uploadedAt: new Date().toISOString(),
         path: uploadData.path,
+        // Add metadata for debugging
+        originalMimeType: file.type || "unknown",
+        processedSuccessfully: true,
       },
       message: "File uploaded successfully",
     });

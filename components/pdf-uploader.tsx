@@ -48,18 +48,37 @@ export function PdfUploader({ onUpload }: PdfUploaderProps) {
     setErrorMessage('')
     setUploadedFile(null)
 
-    // Validate file type
-    if (!file.name.toLowerCase().endsWith(".pdf")) {
+    // Basic file validation - just ensure it exists and has a reasonable name
+    if (!file || !file.name) {
+      setUploadStatus('error')
+      setErrorMessage("Please select a valid file")
+      return
+    }
+
+    // Check for obviously wrong file types
+    const suspiciousExtensions = ['.txt', '.doc', '.docx', '.jpg', '.png', '.gif', '.zip', '.exe'];
+    const hasSuspiciousExtension = suspiciousExtensions.some(ext => 
+      file.name.toLowerCase().endsWith(ext)
+    );
+    
+    if (hasSuspiciousExtension) {
       setUploadStatus('error')
       setErrorMessage("Please select a PDF file")
       return
     }
 
-    // Validate file size (10MB limit)
-    const maxSize = 10 * 1024 * 1024 // 10MB
+    // Relaxed file size validation (50MB limit to match API)
+    const maxSize = 50 * 1024 * 1024 // 50MB
     if (file.size > maxSize) {
       setUploadStatus('error')
-      setErrorMessage("File size must be less than 10MB")
+      setErrorMessage("File size must be less than 50MB")
+      return
+    }
+
+    // Check for empty files
+    if (file.size === 0) {
+      setUploadStatus('error')
+      setErrorMessage("File appears to be empty")
       return
     }
 
@@ -127,7 +146,7 @@ export function PdfUploader({ onUpload }: PdfUploaderProps) {
       <input 
         ref={fileInputRef} 
         type="file" 
-        accept=".pdf" 
+        accept=".pdf,application/pdf" 
         onChange={handleFileSelect} 
         className="hidden" 
       />
@@ -198,7 +217,7 @@ export function PdfUploader({ onUpload }: PdfUploaderProps) {
             <p className="mt-2 text-sm text-gray-600">
               Drag and drop your PDF file, or click the button below to browse
             </p>
-            <p className="mt-1 text-xs text-gray-500">Maximum file size: 10MB</p>
+            <p className="mt-1 text-xs text-gray-500">Maximum file size: 50MB</p>
           </div>
           <Button
             onClick={() => fileInputRef.current?.click()}
